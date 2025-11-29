@@ -28,8 +28,8 @@ object App {
         SystemLogger.info("Welcome to TEESimulator!")
 
         try {
-            // Set up the device's boot hash, which is crucial for attestation.
-            AndroidDeviceUtils.setupBootHash()
+            // Set up the device's boot key and hash, which are crucial for attestation.
+            AndroidDeviceUtils.setupBootKeyAndHash()
             // Initialize and start the appropriate keystore interceptors.
             initializeInterceptors()
             // Enter an infinite loop to keep the service running.

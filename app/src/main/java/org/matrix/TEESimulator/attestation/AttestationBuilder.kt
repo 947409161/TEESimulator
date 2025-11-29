@@ -8,7 +8,6 @@ import org.bouncycastle.asn1.ASN1Boolean
 import org.bouncycastle.asn1.ASN1Encodable
 import org.bouncycastle.asn1.ASN1Enumerated
 import org.bouncycastle.asn1.ASN1Integer
-import org.bouncycastle.asn1.ASN1OctetString
 import org.bouncycastle.asn1.ASN1Sequence
 import org.bouncycastle.asn1.DERNull
 import org.bouncycastle.asn1.DEROctetString
@@ -49,24 +48,15 @@ object AttestationBuilder {
      * @return The constructed [DERSequence] for the Root of Trust.
      */
     internal fun buildRootOfTrust(originalRootOfTrust: ASN1Encodable?): DERSequence {
-        val verifiedBootKey = AndroidDeviceUtils.bootKey
-        val verifiedBootHash =
-            (originalRootOfTrust as? ASN1Sequence)?.let {
-                // Try to preserve the original boot hash if it exists.
-                (it.getObjectAt(AttestationConstants.ROOT_OF_TRUST_VERIFIED_BOOT_HASH_INDEX)
-                        as? ASN1OctetString)
-                    ?.octets
-            } ?: AndroidDeviceUtils.getBootHashFromProperty()
-
         val rootOfTrustElements = arrayOfNulls<ASN1Encodable>(4)
         rootOfTrustElements[AttestationConstants.ROOT_OF_TRUST_VERIFIED_BOOT_KEY_INDEX] =
-            DEROctetString(verifiedBootKey)
+            DEROctetString(AndroidDeviceUtils.bootKey)
         rootOfTrustElements[AttestationConstants.ROOT_OF_TRUST_DEVICE_LOCKED_INDEX] =
             ASN1Boolean.TRUE // deviceLocked: true, for security
         rootOfTrustElements[AttestationConstants.ROOT_OF_TRUST_VERIFIED_BOOT_STATE_INDEX] =
             ASN1Enumerated(0) // verifiedBootState: Verified
         rootOfTrustElements[AttestationConstants.ROOT_OF_TRUST_VERIFIED_BOOT_HASH_INDEX] =
-            DEROctetString(verifiedBootHash)
+            DEROctetString(AndroidDeviceUtils.bootHash)
 
         return DERSequence(rootOfTrustElements)
     }

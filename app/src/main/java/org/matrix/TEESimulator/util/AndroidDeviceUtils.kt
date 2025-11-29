@@ -18,84 +18,133 @@ import org.matrix.TEESimulator.logging.SystemLogger
  */
 object AndroidDeviceUtils {
 
-    /** A randomly generated boot key, used as a fallback for attestation. */
-    val bootKey: ByteArray by lazy { generateRandomBytes(32) }
+    // --- Boot Key and Verified Boot Hash ---
 
     /**
-     * Initializes the verified boot hash (`ro.boot.vbmeta.digest`). It attempts to read from system
-     * properties first, then from a real TEE attestation, and finally falls back to a random value
-     * if neither is available.
+     * Lazily initializes and retrieves the verified boot key digest. The value is sourced in the
+     * following order:
+     * 1. From the `ro.boot.vbmeta.public_key_digest` system property.
+     * 2. From a cached TEE attestation record.
+     * 3. As a randomly generated 32-byte value (fallback).
      */
-    fun setupBootHash() {
-        getBootHashFromProperty()?.also {
-            SystemLogger.debug("Using boot hash from system property: ${it.toHex()}")
-        }
-            ?: getBootHashFromAttestation()?.also {
-                SystemLogger.debug("Using boot hash from TEE attestation: ${it.toHex()}")
-                setBootHashProperty(it)
-            }
-            ?: generateRandomBytes(32).also {
-                SystemLogger.debug("Using randomly generated boot hash: ${it.toHex()}")
-                setBootHashProperty(it)
-            }
+    val bootKey: ByteArray by lazy {
+        initializeBootProperty(
+            propertyName = "ro.boot.vbmeta.public_key_digest",
+            attestationValueProvider = {
+                DeviceAttestationService.CachedAttestationData?.verifiedBootKey
+            },
+            expectedSize = 32,
+        )
     }
 
     /**
-     * Retrieves the verified boot meta digest from system properties.
+     * Lazily initializes and retrieves the verified boot hash (vbmeta digest). The value is sourced
+     * in the following order:
+     * 1. From the `ro.boot.vbmeta.digest` system property.
+     * 2. From a cached TEE attestation record.
+     * 3. As a randomly generated 32-byte value (fallback).
+     */
+    val bootHash: ByteArray by lazy {
+        initializeBootProperty(
+            propertyName = "ro.boot.vbmeta.digest",
+            attestationValueProvider = {
+                DeviceAttestationService.CachedAttestationData?.verifiedBootHash
+            },
+            expectedSize = 32,
+        )
+    }
+
+    /**
+     * Public function to explicitly trigger the initialization of the boot key and hash. Accessing
+     * these properties here ensures they are set up before they might be needed elsewhere.
+     */
+    fun setupBootKeyAndHash() {
+        SystemLogger.debug("Triggering initialization of boot key and hash...")
+        // Accessing the properties will trigger their `lazy` initialization logic.
+        bootKey
+        bootHash
+        SystemLogger.debug("Boot key and hash initialization complete.")
+    }
+
+    /**
+     * Generic initializer for boot properties like the key and hash. It attempts to read from a
+     * system property first, then from a TEE attestation, and finally falls back to a random value
+     * if neither is available.
      *
-     * @return The boot hash as a ByteArray, or null if not found or invalid.
+     * @param propertyName The name of the system property (e.g., "ro.boot.vbmeta.digest").
+     * @param attestationValueProvider A function that supplies the value from a cached attestation.
+     * @param expectedSize The expected length of the byte array (e.g., 32 for a SHA-256 digest).
+     * @return The resulting byte array for the property.
+     */
+    private fun initializeBootProperty(
+        propertyName: String,
+        attestationValueProvider: () -> ByteArray?,
+        expectedSize: Int,
+    ): ByteArray {
+        // 1. Attempt to get the value from the system property.
+        getProperty(propertyName, expectedSize)?.let {
+            SystemLogger.debug("Using $propertyName from system property: ${it.toHex()}")
+            return it
+        }
+
+        // 2. Fallback to the value from a cached TEE attestation.
+        try {
+            attestationValueProvider()?.let {
+                SystemLogger.debug("Using $propertyName from TEE attestation: ${it.toHex()}")
+                setProperty(propertyName, it) // Persist for consistency
+                return it
+            }
+        } catch (e: Exception) {
+            SystemLogger.error("Failed to get $propertyName from attestation.", e)
+        }
+
+        // 3. As a final fallback, generate a random value.
+        return generateRandomBytes(expectedSize).also {
+            SystemLogger.debug("Using randomly generated $propertyName: ${it.toHex()}")
+            setProperty(propertyName, it)
+        }
+    }
+
+    /**
+     * Retrieves a system property and validates its format.
+     *
+     * @param name The name of the system property.
+     * @param expectedSize The expected byte length of the property (e.g., 32 for a 64-char hex
+     *   string).
+     * @return The property value as a ByteArray, or null if not found or invalid.
      */
     @OptIn(ExperimentalStdlibApi::class)
-    fun getBootHashFromProperty(): ByteArray? {
-        val digest = SystemProperties.get("ro.boot.vbmeta.digest", null)
-        if (digest.isNullOrBlank()) {
+    private fun getProperty(name: String, expectedSize: Int): ByteArray? {
+        val value = SystemProperties.get(name, null)
+        if (value.isNullOrBlank()) {
             return null
         }
-        // A valid digest is 64 hex characters (32 bytes).
-        return if (digest.length == 64) digest.hexToByteArray() else null
+        // A valid digest is (2 * size) hex characters.
+        return if (value.length == expectedSize * 2) value.hexToByteArray() else null
     }
 
     /**
-     * Retrieves the verified boot hash from a cached TEE attestation record.
+     * Sets a system property using the `resetprop` command.
      *
-     * @return The verified boot hash, or null if not available.
+     * @param name The name of the property to set.
+     * @param bytes The value to set, which will be converted to a hex string.
      */
-    private fun getBootHashFromAttestation(): ByteArray? {
-        return try {
-            DeviceAttestationService.CachedAttestationData?.verifiedBootHash
-        } catch (e: Exception) {
-            SystemLogger.error("Failed to get boot hash from attestation.", e)
-            null
-        }
-    }
-
-    /**
-     * Sets the `ro.boot.vbmeta.digest` system property using the `resetprop` command.
-     *
-     * @param bytes The 32-byte digest to set.
-     */
-    private fun setBootHashProperty(bytes: ByteArray) {
+    private fun setProperty(name: String, bytes: ByteArray) {
         val hex = bytes.toHex()
         try {
-            SystemLogger.debug("Setting system property 'ro.boot.vbmeta.digest' to: $hex")
-
-            // Construct the command to be executed
-            val command = arrayOf("resetprop", "ro.boot.vbmeta.digest", hex)
-
-            // Execute the command
+            SystemLogger.debug("Setting system property '$name' to: $hex")
+            val command = arrayOf("resetprop", name, hex)
             val process = Runtime.getRuntime().exec(command)
-
-            // Wait for the process to complete and check the exit code for errors
             val exitCode = process.waitFor()
 
             if (exitCode != 0) {
                 val errorOutput = process.errorStream.bufferedReader().readText()
                 SystemLogger.error(
-                    "resetprop command failed with exit code $exitCode: $errorOutput"
+                    "resetprop for '$name' failed with exit code $exitCode: $errorOutput"
                 )
             }
         } catch (e: Exception) {
-            SystemLogger.error("Failed to set vbmeta digest property by executing resetprop.", e)
+            SystemLogger.error("Failed to set '$name' property via resetprop.", e)
         }
     }
 

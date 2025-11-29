@@ -38,12 +38,14 @@ object DeviceAttestationService {
      * Holds key data extracted from a genuine device attestation. This data can be used as a
      * baseline for creating simulated attestations.
      *
+     * @property verifiedBootKey The verified boot public key digest from the root of trust.
      * @property verifiedBootHash The verified boot hash from the root of trust.
      * @property attestVersion The attestation version (e.g., 400 for KeyMint 4.0).
      * @property keymasterVersion The Keymaster or KeyMint HAL version.
      * @property osVersion The Android OS version integer.
      */
     data class AttestationData(
+        val verifiedBootKey: ByteArray?,
         val verifiedBootHash: ByteArray?,
         val attestVersion: Int?,
         val keymasterVersion: Int?,
@@ -166,6 +168,7 @@ object DeviceAttestationService {
                     .positiveValue
                     .toInt()
 
+            var verifiedBootKey: ByteArray? = null
             var verifiedBootHash: ByteArray? = null
             var osVersion: Int? = null
 
@@ -179,6 +182,14 @@ object DeviceAttestationService {
                     AttestationConstants.TAG_ROOT_OF_TRUST -> {
                         val rotSeq = ASN1Sequence.getInstance(tagged.baseObject.toASN1Primitive())
                         if (rotSeq.size() >= 4) {
+                            verifiedBootKey =
+                                ASN1OctetString.getInstance(
+                                        rotSeq.getObjectAt(
+                                            AttestationConstants
+                                                .ROOT_OF_TRUST_VERIFIED_BOOT_KEY_INDEX
+                                        )
+                                    )
+                                    .octets
                             verifiedBootHash =
                                 ASN1OctetString.getInstance(
                                         rotSeq.getObjectAt(
@@ -199,9 +210,15 @@ object DeviceAttestationService {
             }
 
             SystemLogger.info(
-                "Successfully extracted attestation data: version=$attestVersion, osVersion=$osVersion, bootHash=${verifiedBootHash?.toHex()}"
+                "Successfully extracted attestation data: version=$attestVersion, osVersion=$osVersion, bootKey=${verifiedBootKey?.toHex()}, bootHash=${verifiedBootHash?.toHex()}"
             )
-            return AttestationData(verifiedBootHash, attestVersion, keymasterVersion, osVersion)
+            return AttestationData(
+                verifiedBootKey,
+                verifiedBootHash,
+                attestVersion,
+                keymasterVersion,
+                osVersion,
+            )
         } catch (e: Exception) {
             SystemLogger.error("Failed to parse attestation data from certificate.", e)
             return null
